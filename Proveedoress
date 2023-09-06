@@ -1,0 +1,144 @@
+import os
+import pandas as pd
+import shutil
+import re
+
+ruta_original = r'ruta_principal'
+ruta_temporal = r'ruta_Temporal'
+ruta_final = r'DondeQuieresQueQuede'
+
+
+suffix = input("Por favor, ingrese el año en formato YYYYMM: ")
+
+encodings = ['mbcs', 'utf-8']
+
+proveedores = {'Proveedores': 'TuPrimerProveedor', 'Provee': 'TuSegundoProveedor'}
+
+def dividir(df):
+    # Divide la columna 'Medicamento' en una lista de medicamentos, usando '-' como el separador
+    df['Medicamento'] = df['Medicamento'].str.split(' - ')
+
+    # Usa explode para crear una nueva fila para cada medicamento en la list<a
+    df = df.explode('Medicamento')
+
+    return df
+
+def procesar_dataframe(df, proveedor):
+    columnas = ['Le', 'Doy', 'el', 'Nombre', 'Que', 'Deben', 'Tener', 'Las', 'Columnas', 'Medicamento']
+
+    df.columns = columnas[:len(df.columns)]  # Se modifica para que la longitud de las columnas corresponda al df
+
+    df = df.drop(['Aqui', 'Elimino', 'Columnas', 'NoDeseadas'], axis=1)
+
+    df.insert(loc=6, column='Agrego una nueva columna', value='S')
+
+    patron = r'[A-Za-z,&.\-+|$%]' #Caracteres para eliminar
+    df['columna1'] = df['columna1'].apply(lambda x: re.sub(patron, '', str(x)).strip())
+
+    df = df[(df['Matricula del Médico'] != '') & (df['Medicamento'] != '')]
+
+    df = dividir(df)
+
+    return df
+
+
+def procesar_proveedor1(df):
+    df = procesar_dataframe(df, 'Proveedor1')
+    df.insert(loc=0, column='Outlet', value=19865)
+    return df
+
+
+def producto(df, proveedor):
+    df = procesar_dataframe(df, proveedor)
+    archivo_excel = 'MAESTRO_PRODCUTO_OBSERVER.xlsx'
+    df_lookup = pd.read_excel(archivo_excel, usecols=[0, 1], names=['columna', 'vlookup'], dtype=str)
+
+    # Eliminar duplicados
+    df_lookup = df_lookup.drop_duplicates(subset=['vlookup'], keep='first')
+
+    # Crear un diccionario a partir del DataFrame
+    lookup_dict = df_lookup.set_index('columna')['vlookup'].to_dict()
+
+    # Mapear los valores utilizando el diccionario y agregar la nueva columna al final del DataFrame
+    df.insert(loc=len(df.columns), column='Codigo de producto', value=df['Medicamento'].map(lookup_dict))
+
+    # Encuentra los valores únicos de 'Medicamento' que no se encuentran en el diccionario lookup_dict
+    missing_values = set(df['Medicamento']) - set(lookup_dict.keys())
+
+    return df
+
+
+def procesar_archivo(ruta, proveedor):
+    print(f"Procesando archivo: {ruta}")
+    df = None
+    for encoding in encodings:
+        try:
+            df = pd.read_csv(ruta, delimiter='\t', encoding=encoding, header=None, dtype=str)
+            df = df.dropna(how='all', axis=1)
+            break
+        except UnicodeDecodeError:
+            continue
+    if df is None:
+        raise ValueError("Ningún encoding válido para leer el archivo.")
+
+    if proveedor.lower() == 'proveedor1':
+        df = procesar_orlandi(df)
+    elif proveedor.lower() in ['proveedor2', 'proveedor3', 'proveedor4', 'proveedor5', 'proveedor6']:
+        df = producto(df, proveedor)
+    else:
+        df = procesar_dataframe(df, proveedor)
+
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].str.replace(",", ".")
+            df[col] = df[col].str.replace(";", ".")
+
+    nuevo_nombre = f"{proveedores[proveedor]}_{suffix}.csv"
+    ruta_salida = os.path.join(ruta_temporal, nuevo_nombre)
+    df.to_csv(ruta_salida, sep=';', index=False, encoding='mbcs')
+
+    mover_archivo(ruta_salida, proveedor)
+    return df
+
+def mover_archivo(ruta_archivo, proveedor):
+    ruta_nueva = None  # inicializar ruta_nueva antes del bucle
+    proveedor = proveedor.lower()
+    for root, dirs, files in os.walk(ruta_final):
+        for dir in dirs:
+            if proveedor in dir.lower():
+                ruta_nueva = os.path.join(root, dir, os.path.basename(ruta_archivo))
+                if os.path.exists(ruta_nueva):
+                    print(f"Archivo {ruta_nueva} listo!")
+                    os.remove(ruta_nueva)
+                
+                # Antes de mover el archivo, se deja una copia
+                #ruta_copia = os.path.join(ruta_copia, os.path.basename(ruta_archivo))
+                #shutil.copy2(ruta_archivo, ruta_copia)
+                # Se mueve el archivo
+                shutil.move(ruta_archivo, ruta_nueva)
+                return
+    if ruta_nueva is None:
+        print(f"No se encontró el directorio del proveedor para el archivo {ruta_archivo}")
+    else:
+        print(f"ruta_nueva: {ruta_nueva}")
+
+
+# Ahora procesaremos los archivos de cada proveedor
+for proveedor in proveedores:
+    df_list = []
+    for raiz, dirs, archivos in os.walk(ruta_original):
+        for archivo in archivos:
+            if archivo.endswith('.txt') and proveedor.lower() in archivo.lower():
+                ruta_completa = os.path.join(raiz, archivo)
+                df = procesar_archivo(ruta_completa, proveedor)
+                if df is not None:  # Se comprueba si el DataFrame no es None antes de añadirlo a la lista
+                    df_list.append(df)
+
+    if df_list:  # Se verifica si la lista no está vacía antes de concatenar
+        df_final = pd.concat(df_list)
+
+        nuevo_nombre = f"{proveedores[proveedor]}_{suffix}.csv"
+        ruta_salida = os.path.join(ruta_temporal, nuevo_nombre)
+        df_final.to_csv(ruta_salida, sep=';', index=False, encoding='mbcs')
+
+        mover_archivo(ruta_salida, proveedor)
